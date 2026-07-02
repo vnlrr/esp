@@ -1,0 +1,546 @@
+-- Matcha ESP Library
+-- Fully customizable from outside the source. Load it, then edit ESP.Settings
+-- or pass per-tracker options. Supports: box (2d / corner), tracer, distance,
+-- and unlimited named text tags with adjustable anchor (top / middle / bottom)
+-- and customizable font.
+--
+--   local ESP = loadstring(game:HttpGet("<your-url>"))()
+--   ESP.Settings.Box = true
+--   ESP.Settings.Tracer = true
+--   local t = ESP.NewTracker(workspace.SomeModel, { Name = "Enemy", Color = Color3.fromRGB(255,0,0) })
+--   t:AddText("HP", "HP: 100", Color3.fromRGB(0,255,0))          -- extra tag
+--   t:ChangeText("HP", "HP: 42")
+--   t:Destroy()
+
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+local ESP = {}
+ESP.__index = ESP
+
+ESP.Trackers = {}
+
+ESP.Settings = {
+    Enabled = true,
+
+    Box = true,
+    BoxType = "2d",          -- "2d" | "corner"
+    CornerRatio = 0.25,      -- corner length as a fraction of the box (0-0.5)
+
+    Tracer = false,
+    TracerOrigin = "bottom", -- "bottom" | "top" | "center" | "mouse"
+
+    Name = true,
+    Distance = true,
+
+    NameAnchor = "top",      -- "top" | "middle" | "bottom"
+    Padding = 3,
+
+    Font = Drawing.Fonts.UI,
+    TextSize = 13,
+    TextOutline = true,
+
+    Thickness = 1,
+    MaxDistance = 0,         -- 0 = unlimited (studs)
+
+    Color = Color3.fromRGB(255, 255, 255), -- master fallback color
+    BoxColor = nil,
+    CornerColor = nil,
+    TracerColor = nil,
+    NameColor = nil,
+    DistanceColor = Color3.fromRGB(200, 200, 200),
+}
+
+local BasePartTypes = {
+    Part = "BasePart",
+    MeshPart = "BasePart",
+    UnionOperation = "BasePart",
+    CornerWedgePart = "BasePart",
+    WedgePart = "BasePart",
+    TrussPart = "BasePart",
+    Seat = "BasePart",
+    VehicleSeat = "BasePart",
+    SpawnLocation = "BasePart",
+    Model = "Model",
+    Actor = "Model",
+}
+
+local function classifyObject(object)
+    if typeof(object) ~= "Instance" then return nil end
+    return BasePartTypes[object.ClassName]
+end
+
+local function resolveModelPart(model)
+    local common = { "HumanoidRootPart", "Root", "RootPart", "Torso", "Core", "Head" }
+    local children = model:GetChildren()
+
+    for _, name in ipairs(common) do
+        for _, child in ipairs(children) do
+            if string.lower(child.Name) == string.lower(name) and BasePartTypes[child.ClassName] == "BasePart" then
+                return child
+            end
+        end
+    end
+
+    if model.ClassName == "Model" and model.PrimaryPart then
+        return model.PrimaryPart
+    end
+
+    local largest, maxVol = nil, 0
+    for _, child in ipairs(model:GetDescendants()) do
+        if BasePartTypes[child.ClassName] == "BasePart" then
+            local s = child.Size
+            local vol = s.X * s.Y * s.Z
+            if vol > maxVol then
+                maxVol = vol
+                largest = child
+            end
+        end
+    end
+    return largest
+end
+
+local function optOf(self, key)
+    local v = self.Options[key]
+    if v ~= nil then return v end
+    return ESP.Settings[key]
+end
+
+local function colorOf(self, key)
+    return self.Options[key] or ESP.Settings[key] or self.Color or ESP.Settings.Color
+end
+
+local function tracerOrigin(mode)
+    local cam = workspace.CurrentCamera
+    local vp = (cam and cam.ViewportSize) or Vector2.new(1920, 1080)
+    if mode == "top" then
+        return Vector2.new(vp.X / 2, 0)
+    elseif mode == "center" then
+        return Vector2.new(vp.X / 2, vp.Y / 2)
+    elseif mode == "mouse" then
+        local ok, mp = pcall(function() return UserInputService:GetMouseLocation() end)
+        if ok and mp then return Vector2.new(mp.X, mp.Y) end
+        return Vector2.new(vp.X / 2, vp.Y)
+    end
+    return Vector2.new(vp.X / 2, vp.Y)
+end
+
+local CORNER_OFFSETS = {
+    Vector3.new(-1, -1, -1), Vector3.new(1, -1, -1),
+    Vector3.new(1, -1, 1), Vector3.new(-1, -1, 1),
+    Vector3.new(-1, 1, -1), Vector3.new(1, 1, -1),
+    Vector3.new(1, 1, 1), Vector3.new(-1, 1, 1),
+}
+
+--============================================================
+-- Tracker
+--============================================================
+
+function ESP.NewTracker(object, options)
+    options = options or {}
+
+    local objectType = classifyObject(object)
+    if not objectType then
+        warn("[ESP] NewTracker expects a BasePart or Model, got: " .. tostring(object))
+        return nil
+    end
+
+    local rawObject = object
+    local part = object
+    if objectType == "Model" then
+        part = resolveModelPart(object)
+        if not part then
+            warn("[ESP] Model has no valid parts: " .. tostring(object.Name))
+            return nil
+        end
+    end
+
+    local key = part.Address
+    if ESP.Trackers[key] then
+        return ESP.Trackers[key]
+    end
+
+    local self = setmetatable({}, ESP)
+    self.RawObject = rawObject
+    self.Object = part
+    self.ObjectType = objectType
+    self.Options = options
+    self.Type = options.Type
+    self.Name = options.Name or rawObject.Name
+    self.Color = options.Color or ESP.Settings.Color
+    self.Visible = true
+    self.Texts = {}
+    self.TextOrder = {}
+
+    self:_Build()
+
+    ESP.Trackers[key] = self
+    return self
+end
+
+function ESP:_Build()
+    self.Box = Drawing.new("Square")
+    self.Box.Filled = false
+    self.Box.Thickness = optOf(self, "Thickness")
+    self.Box.Color = colorOf(self, "BoxColor")
+    self.Box.Visible = false
+
+    self.Corners = {}
+    for i = 1, 8 do
+        local line = Drawing.new("Line")
+        line.Thickness = optOf(self, "Thickness")
+        line.Color = colorOf(self, "CornerColor")
+        line.Visible = false
+        self.Corners[i] = line
+    end
+
+    self.Tracer = Drawing.new("Line")
+    self.Tracer.Thickness = optOf(self, "Thickness")
+    self.Tracer.Color = colorOf(self, "TracerColor")
+    self.Tracer.Visible = false
+
+    self:AddText("Name", self.Name, self.Color)
+    self:AddText("Distance", "[0m]", ESP.Settings.DistanceColor, function()
+        return "[" .. math.floor(self:_GetDistance()) .. "m]"
+    end)
+end
+
+function ESP:AddText(reference, value, color, callback)
+    if self.Texts[reference] then return self.Texts[reference] end
+
+    local text = Drawing.new("Text")
+    text.Center = true
+    text.Outline = optOf(self, "TextOutline")
+    text.Font = optOf(self, "Font")
+    text.Size = optOf(self, "TextSize")
+    text.Color = color or self.Color or ESP.Settings.Color
+    text.Text = (callback and callback()) or value or reference
+    text.Visible = false
+
+    local entry = {
+        Drawing = text,
+        Callback = callback,
+        Color = text.Color,
+        Show = true,
+    }
+    self.Texts[reference] = entry
+    table.insert(self.TextOrder, reference)
+    return entry
+end
+
+function ESP:ChangeText(reference, value, color)
+    local entry = self.Texts[reference]
+    if not entry then return end
+    if value ~= nil then entry.Drawing.Text = value end
+    if color then
+        entry.Drawing.Color = color
+        entry.Color = color
+    end
+end
+
+function ESP:SetTextVisible(reference, state)
+    local entry = self.Texts[reference]
+    if entry then entry.Show = state end
+end
+
+function ESP:RemoveText(reference)
+    local entry = self.Texts[reference]
+    if not entry then return end
+    pcall(function() entry.Drawing:Remove() end)
+    self.Texts[reference] = nil
+    for i, ref in ipairs(self.TextOrder) do
+        if ref == reference then
+            table.remove(self.TextOrder, i)
+            break
+        end
+    end
+end
+
+function ESP:Set(key, value)
+    self.Options[key] = value
+end
+
+function ESP:SetColor(color)
+    self.Color = color
+    self:ChangeText("Name", nil, color)
+end
+
+function ESP:SetVisible(state)
+    self.Visible = state
+end
+
+function ESP:_IsAlive()
+    return self.RawObject and self.RawObject:IsDescendantOf(workspace) and true or false
+end
+
+function ESP:_PosSize()
+    if self.ObjectType == "Model" then
+        local ok, cf, size = pcall(function() return self.RawObject:GetBoundingBox() end)
+        if ok and cf and size then return cf.Position, size end
+    end
+    if self.Object and self.Object.Parent then
+        return self.Object.Position, self.Object.Size
+    end
+    return nil
+end
+
+function ESP:_GetDistance()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return 0 end
+    local pos = self:_PosSize()
+    if not pos then return 0 end
+    return (hrp.Position - pos).Magnitude
+end
+
+function ESP:_Bounds(position, size)
+    local half = size * 0.5
+    local minX, minY = math.huge, math.huge
+    local maxX, maxY = -math.huge, -math.huge
+
+    for i = 1, 8 do
+        local o = CORNER_OFFSETS[i]
+        local wp = Vector3.new(
+            position.X + o.X * half.X,
+            position.Y + o.Y * half.Y,
+            position.Z + o.Z * half.Z
+        )
+        local sp, on = WorldToScreen(wp)
+        if not on then return nil end
+        if sp.X < minX then minX = sp.X end
+        if sp.Y < minY then minY = sp.Y end
+        if sp.X > maxX then maxX = sp.X end
+        if sp.Y > maxY then maxY = sp.Y end
+    end
+
+    return minX, minY, maxX, maxY
+end
+
+function ESP:_HideAll()
+    self.Box.Visible = false
+    for _, l in ipairs(self.Corners) do l.Visible = false end
+    self.Tracer.Visible = false
+    for _, ref in ipairs(self.TextOrder) do
+        self.Texts[ref].Drawing.Visible = false
+    end
+end
+
+function ESP:_DrawCorners(minX, minY, maxX, maxY, color, thickness)
+    local w, h = maxX - minX, maxY - minY
+    local len = math.min(w, h) * math.clamp(optOf(self, "CornerRatio"), 0.05, 0.5)
+
+    local segs = {
+        { Vector2.new(minX, minY), Vector2.new(minX + len, minY) },
+        { Vector2.new(minX, minY), Vector2.new(minX, minY + len) },
+        { Vector2.new(maxX, minY), Vector2.new(maxX - len, minY) },
+        { Vector2.new(maxX, minY), Vector2.new(maxX, minY + len) },
+        { Vector2.new(minX, maxY), Vector2.new(minX + len, maxY) },
+        { Vector2.new(minX, maxY), Vector2.new(minX, maxY - len) },
+        { Vector2.new(maxX, maxY), Vector2.new(maxX - len, maxY) },
+        { Vector2.new(maxX, maxY), Vector2.new(maxX, maxY - len) },
+    }
+
+    for i = 1, 8 do
+        local line = self.Corners[i]
+        line.From = segs[i][1]
+        line.To = segs[i][2]
+        line.Color = color
+        line.Thickness = thickness
+        line.Visible = true
+    end
+end
+
+function ESP:_PositionTexts(anchorX, boxMinY, boxMaxY)
+    local anchor = optOf(self, "NameAnchor")
+    local size = optOf(self, "TextSize")
+    local pad = optOf(self, "Padding")
+    local lineH = size + 2
+
+    local visible = {}
+    for _, ref in ipairs(self.TextOrder) do
+        local entry = self.Texts[ref]
+        local show = entry.Show ~= false
+        if ref == "Name" and not optOf(self, "Name") then show = false end
+        if ref == "Distance" and not optOf(self, "Distance") then show = false end
+        if show then
+            visible[#visible + 1] = entry
+        else
+            entry.Drawing.Visible = false
+        end
+    end
+
+    local n = #visible
+    for i, entry in ipairs(visible) do
+        local d = entry.Drawing
+        d.Center = true
+        d.Font = optOf(self, "Font")
+        d.Size = size
+        d.Outline = optOf(self, "TextOutline")
+        if entry.Callback then d.Text = entry.Callback() end
+
+        local y
+        if anchor == "bottom" then
+            y = boxMaxY + pad + (i - 1) * lineH
+        elseif anchor == "middle" then
+            local cy = (boxMinY + boxMaxY) * 0.5
+            y = cy - (n * lineH) * 0.5 + (i - 1) * lineH
+        else
+            y = boxMinY - pad - (n - i + 1) * lineH
+        end
+
+        d.Position = Vector2.new(anchorX, y)
+        d.Visible = true
+    end
+end
+
+function ESP:_Update()
+    if not self:_IsAlive() then
+        self:Destroy()
+        return
+    end
+
+    if not ESP.Settings.Enabled or not self.Visible then
+        self:_HideAll()
+        return
+    end
+
+    local position, size = self:_PosSize()
+    if not position then
+        self:_HideAll()
+        return
+    end
+
+    local maxDist = optOf(self, "MaxDistance")
+    if maxDist and maxDist > 0 then
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp and (hrp.Position - position).Magnitude > maxDist then
+            self:_HideAll()
+            return
+        end
+    end
+
+    local center, centerOn = WorldToScreen(position)
+    local minX, minY, maxX, maxY = self:_Bounds(position, size)
+    local boundsOn = minX ~= nil
+
+    local anchorX, boxMinY, boxMaxY
+    if boundsOn then
+        anchorX = (minX + maxX) * 0.5
+        boxMinY, boxMaxY = minY, maxY
+    elseif centerOn then
+        anchorX = center.X
+        boxMinY, boxMaxY = center.Y, center.Y
+    else
+        self:_HideAll()
+        return
+    end
+
+    local thickness = optOf(self, "Thickness")
+
+    local showBox = optOf(self, "Box") and boundsOn
+    local boxType = optOf(self, "BoxType")
+    if showBox and boxType == "corner" then
+        self.Box.Visible = false
+        self:_DrawCorners(minX, minY, maxX, maxY, colorOf(self, "CornerColor"), thickness)
+    elseif showBox then
+        for _, l in ipairs(self.Corners) do l.Visible = false end
+        self.Box.Position = Vector2.new(minX, minY)
+        self.Box.Size = Vector2.new(maxX - minX, maxY - minY)
+        self.Box.Color = colorOf(self, "BoxColor")
+        self.Box.Thickness = thickness
+        self.Box.Visible = true
+    else
+        self.Box.Visible = false
+        for _, l in ipairs(self.Corners) do l.Visible = false end
+    end
+
+    if optOf(self, "Tracer") and centerOn then
+        self.Tracer.From = tracerOrigin(optOf(self, "TracerOrigin"))
+        self.Tracer.To = Vector2.new(anchorX, boxMaxY)
+        self.Tracer.Color = colorOf(self, "TracerColor")
+        self.Tracer.Thickness = thickness
+        self.Tracer.Visible = true
+    else
+        self.Tracer.Visible = false
+    end
+
+    self:_PositionTexts(anchorX, boxMinY, boxMaxY)
+end
+
+function ESP:Destroy()
+    if self.Object then
+        ESP.Trackers[self.Object.Address] = nil
+    end
+    pcall(function() self.Box:Remove() end)
+    pcall(function() self.Tracer:Remove() end)
+    for _, l in ipairs(self.Corners or {}) do
+        pcall(function() l:Remove() end)
+    end
+    for _, entry in pairs(self.Texts or {}) do
+        pcall(function() entry.Drawing:Remove() end)
+    end
+    self.Box = nil
+    self.Tracer = nil
+    self.Corners = nil
+    self.Texts = nil
+    self.TextOrder = nil
+    self.Object = nil
+    self.RawObject = nil
+    setmetatable(self, nil)
+end
+
+--============================================================
+-- Library helpers
+--============================================================
+
+function ESP.Get(object)
+    if typeof(object) ~= "Instance" then return nil end
+    local part = object
+    if classifyObject(object) == "Model" then
+        part = resolveModelPart(object)
+    end
+    return part and ESP.Trackers[part.Address] or nil
+end
+
+function ESP.RemoveType(typeName)
+    for _, tracker in pairs(ESP.Trackers) do
+        if tracker.Type == typeName then
+            tracker:Destroy()
+        end
+    end
+end
+
+function ESP.DestroyAll()
+    for _, tracker in pairs(ESP.Trackers) do
+        tracker:Destroy()
+    end
+    ESP.Trackers = {}
+end
+
+function ESP.Unload()
+    ESP.DestroyAll()
+    if ESP._Connection then
+        pcall(function() ESP._Connection:Disconnect() end)
+        ESP._Connection = nil
+    end
+    _G.ESP = nil
+end
+
+if ESP._Connection then
+    pcall(function() ESP._Connection:Disconnect() end)
+end
+
+ESP._Connection = RunService.RenderStepped:Connect(function()
+    for _, tracker in pairs(ESP.Trackers) do
+        local ok = pcall(function() tracker:_Update() end)
+        if not ok and tracker.Destroy then
+            pcall(function() tracker:Destroy() end)
+        end
+    end
+end)
+
+_G.ESP = ESP
+return ESP
