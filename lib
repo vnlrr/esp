@@ -187,12 +187,15 @@ function ESP.NewTracker(object, options)
 end
 
 function ESP:_Build()
-    self.Box = newDrawing("Square")
-    if self.Box then
-        self.Box.Filled = false
-        self.Box.Thickness = optOf(self, "Thickness")
-        self.Box.Color = colorOf(self, "BoxColor")
-        self.Box.Visible = false
+    self.BoxLines = {}
+    for i = 1, 4 do
+        local line = newDrawing("Line")
+        if line then
+            line.Thickness = optOf(self, "Thickness")
+            line.Color = colorOf(self, "BoxColor")
+            line.Visible = false
+            self.BoxLines[i] = line
+        end
     end
 
     self.Corners = {}
@@ -228,7 +231,7 @@ function ESP:AddText(reference, value, color, callback)
     text.Outline = optOf(self, "TextOutline")
     local font = optOf(self, "Font")
     if font ~= nil then pcall(function() text.Font = font end) end
-    text.Size = optOf(self, "TextSize")
+    text.FontSize = optOf(self, "TextSize")
     text.Color = color or self.Color or ESP.Settings.Color
     text.Text = (callback and callback()) or value or reference
     text.Visible = false
@@ -332,13 +335,36 @@ function ESP:_Bounds(position, size)
     return minX, minY, maxX, maxY
 end
 
+local function hideLines(lines)
+    for _, l in ipairs(lines or {}) do l.Visible = false end
+end
+
 function ESP:_HideAll()
-    if self.Box then self.Box.Visible = false end
-    for _, l in ipairs(self.Corners or {}) do l.Visible = false end
+    hideLines(self.BoxLines)
+    hideLines(self.Corners)
     if self.Tracer then self.Tracer.Visible = false end
     for _, ref in ipairs(self.TextOrder or {}) do
         local e = self.Texts[ref]
         if e and e.Drawing then e.Drawing.Visible = false end
+    end
+end
+
+function ESP:_DrawBox(minX, minY, maxX, maxY, color, thickness)
+    local edges = {
+        { Vector2.new(minX, minY), Vector2.new(maxX, minY) },
+        { Vector2.new(maxX, minY), Vector2.new(maxX, maxY) },
+        { Vector2.new(maxX, maxY), Vector2.new(minX, maxY) },
+        { Vector2.new(minX, maxY), Vector2.new(minX, minY) },
+    }
+    for i = 1, 4 do
+        local line = self.BoxLines[i]
+        if line then
+            line.From = edges[i][1]
+            line.To = edges[i][2]
+            line.Color = color
+            line.Thickness = thickness
+            line.Visible = true
+        end
     end
 end
 
@@ -398,7 +424,7 @@ function ESP:_PositionTexts(anchorX, boxMinY, boxMaxY)
         d.Center = true
         local font = optOf(self, "Font")
         if font ~= nil then pcall(function() d.Font = font end) end
-        d.Size = size
+        d.FontSize = size
         d.Outline = optOf(self, "TextOutline")
         if entry.Callback then d.Text = entry.Callback() end
 
@@ -465,18 +491,14 @@ function ESP:_Update()
     local showBox = optOf(self, "Box") and boundsOn
     local boxType = optOf(self, "BoxType")
     if showBox and boxType == "corner" then
-        if self.Box then self.Box.Visible = false end
+        hideLines(self.BoxLines)
         self:_DrawCorners(minX, minY, maxX, maxY, colorOf(self, "CornerColor"), thickness)
-    elseif showBox and self.Box then
-        for _, l in ipairs(self.Corners or {}) do l.Visible = false end
-        self.Box.Position = Vector2.new(minX, minY)
-        self.Box.Size = Vector2.new(maxX - minX, maxY - minY)
-        self.Box.Color = colorOf(self, "BoxColor")
-        self.Box.Thickness = thickness
-        self.Box.Visible = true
+    elseif showBox then
+        hideLines(self.Corners)
+        self:_DrawBox(minX, minY, maxX, maxY, colorOf(self, "BoxColor"), thickness)
     else
-        if self.Box then self.Box.Visible = false end
-        for _, l in ipairs(self.Corners or {}) do l.Visible = false end
+        hideLines(self.BoxLines)
+        hideLines(self.Corners)
     end
 
     if self.Tracer and optOf(self, "Tracer") and centerOn then
@@ -496,15 +518,17 @@ function ESP:Destroy()
     if self.Object then
         ESP.Trackers[self.Object.Address] = nil
     end
-    pcall(function() self.Box:Remove() end)
     pcall(function() self.Tracer:Remove() end)
+    for _, l in ipairs(self.BoxLines or {}) do
+        pcall(function() l:Remove() end)
+    end
     for _, l in ipairs(self.Corners or {}) do
         pcall(function() l:Remove() end)
     end
     for _, entry in pairs(self.Texts or {}) do
         pcall(function() entry.Drawing:Remove() end)
     end
-    self.Box = nil
+    self.BoxLines = nil
     self.Tracer = nil
     self.Corners = nil
     self.Texts = nil
