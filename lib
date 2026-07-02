@@ -231,7 +231,9 @@ function ESP:AddText(reference, value, color, callback)
     text.Outline = optOf(self, "TextOutline")
     local font = optOf(self, "Font")
     if font ~= nil then pcall(function() text.Font = font end) end
-    text.FontSize = optOf(self, "TextSize")
+    local sz = optOf(self, "TextSize")
+    pcall(function() text.Size = sz end)
+    pcall(function() text.FontSize = sz end)
     text.Color = color or self.Color or ESP.Settings.Color
     text.Text = (callback and callback()) or value or reference
     text.Visible = false
@@ -424,7 +426,8 @@ function ESP:_PositionTexts(anchorX, boxMinY, boxMaxY)
         d.Center = true
         local font = optOf(self, "Font")
         if font ~= nil then pcall(function() d.Font = font end) end
-        d.FontSize = size
+        pcall(function() d.Size = size end)
+        pcall(function() d.FontSize = size end)
         d.Outline = optOf(self, "TextOutline")
         if entry.Callback then d.Text = entry.Callback() end
 
@@ -567,21 +570,22 @@ function ESP.DestroyAll()
 end
 
 function ESP.Unload()
+    ESP._Running = false
     ESP.DestroyAll()
-    if ESP._Connection then
-        pcall(function() ESP._Connection:Disconnect() end)
-        ESP._Connection = nil
-    end
     _G.ESP = nil
 end
 
-if ESP._Connection then
-    pcall(function() ESP._Connection:Disconnect() end)
+if _G.ESP and _G.ESP._Running ~= nil then
+    _G.ESP._Running = false
 end
 
-ESP._Connection = RunService.RenderStepped:Connect(function()
-    for _, tracker in pairs(ESP.Trackers) do
-        pcall(function() tracker:_Update() end)
+ESP._Running = true
+task.spawn(function()
+    while ESP._Running do
+        for _, tracker in pairs(ESP.Trackers) do
+            pcall(function() tracker:_Update() end)
+        end
+        task.wait()
     end
 end)
 
