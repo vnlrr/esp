@@ -38,7 +38,7 @@ ESP.Settings = {
     NameAnchor = "top",      -- "top" | "middle" | "bottom"
     Padding = 3,
 
-    Font = Drawing.Fonts.UI,
+    Font = (Drawing.Fonts and (Drawing.Fonts.UI or Drawing.Fonts.System or Drawing.Fonts.Plex or Drawing.Fonts.SystemBold)) or 0,
     TextSize = 13,
     TextOutline = true,
 
@@ -100,6 +100,12 @@ local function resolveModelPart(model)
         end
     end
     return largest
+end
+
+local function newDrawing(kind)
+    local ok, d = pcall(Drawing.new, kind)
+    if ok and d then return d end
+    return nil
 end
 
 local function optOf(self, key)
@@ -181,25 +187,31 @@ function ESP.NewTracker(object, options)
 end
 
 function ESP:_Build()
-    self.Box = Drawing.new("Square")
-    self.Box.Filled = false
-    self.Box.Thickness = optOf(self, "Thickness")
-    self.Box.Color = colorOf(self, "BoxColor")
-    self.Box.Visible = false
+    self.Box = newDrawing("Square")
+    if self.Box then
+        self.Box.Filled = false
+        self.Box.Thickness = optOf(self, "Thickness")
+        self.Box.Color = colorOf(self, "BoxColor")
+        self.Box.Visible = false
+    end
 
     self.Corners = {}
     for i = 1, 8 do
-        local line = Drawing.new("Line")
-        line.Thickness = optOf(self, "Thickness")
-        line.Color = colorOf(self, "CornerColor")
-        line.Visible = false
-        self.Corners[i] = line
+        local line = newDrawing("Line")
+        if line then
+            line.Thickness = optOf(self, "Thickness")
+            line.Color = colorOf(self, "CornerColor")
+            line.Visible = false
+            self.Corners[i] = line
+        end
     end
 
-    self.Tracer = Drawing.new("Line")
-    self.Tracer.Thickness = optOf(self, "Thickness")
-    self.Tracer.Color = colorOf(self, "TracerColor")
-    self.Tracer.Visible = false
+    self.Tracer = newDrawing("Line")
+    if self.Tracer then
+        self.Tracer.Thickness = optOf(self, "Thickness")
+        self.Tracer.Color = colorOf(self, "TracerColor")
+        self.Tracer.Visible = false
+    end
 
     self:AddText("Name", self.Name, self.Color)
     self:AddText("Distance", "[0m]", ESP.Settings.DistanceColor, function()
@@ -210,10 +222,12 @@ end
 function ESP:AddText(reference, value, color, callback)
     if self.Texts[reference] then return self.Texts[reference] end
 
-    local text = Drawing.new("Text")
+    local text = newDrawing("Text")
+    if not text then return nil end
     text.Center = true
     text.Outline = optOf(self, "TextOutline")
-    text.Font = optOf(self, "Font")
+    local font = optOf(self, "Font")
+    if font ~= nil then pcall(function() text.Font = font end) end
     text.Size = optOf(self, "TextSize")
     text.Color = color or self.Color or ESP.Settings.Color
     text.Text = (callback and callback()) or value or reference
@@ -319,17 +333,20 @@ function ESP:_Bounds(position, size)
 end
 
 function ESP:_HideAll()
-    self.Box.Visible = false
-    for _, l in ipairs(self.Corners) do l.Visible = false end
-    self.Tracer.Visible = false
-    for _, ref in ipairs(self.TextOrder) do
-        self.Texts[ref].Drawing.Visible = false
+    if self.Box then self.Box.Visible = false end
+    for _, l in ipairs(self.Corners or {}) do l.Visible = false end
+    if self.Tracer then self.Tracer.Visible = false end
+    for _, ref in ipairs(self.TextOrder or {}) do
+        local e = self.Texts[ref]
+        if e and e.Drawing then e.Drawing.Visible = false end
     end
 end
 
 function ESP:_DrawCorners(minX, minY, maxX, maxY, color, thickness)
     local w, h = maxX - minX, maxY - minY
-    local len = math.min(w, h) * math.clamp(optOf(self, "CornerRatio"), 0.05, 0.5)
+    local ratio = optOf(self, "CornerRatio") or 0.25
+    if ratio < 0.05 then ratio = 0.05 elseif ratio > 0.5 then ratio = 0.5 end
+    local len = math.min(w, h) * ratio
 
     local segs = {
         { Vector2.new(minX, minY), Vector2.new(minX + len, minY) },
@@ -344,11 +361,13 @@ function ESP:_DrawCorners(minX, minY, maxX, maxY, color, thickness)
 
     for i = 1, 8 do
         local line = self.Corners[i]
-        line.From = segs[i][1]
-        line.To = segs[i][2]
-        line.Color = color
-        line.Thickness = thickness
-        line.Visible = true
+        if line then
+            line.From = segs[i][1]
+            line.To = segs[i][2]
+            line.Color = color
+            line.Thickness = thickness
+            line.Visible = true
+        end
     end
 end
 
@@ -364,10 +383,12 @@ function ESP:_PositionTexts(anchorX, boxMinY, boxMaxY)
         local show = entry.Show ~= false
         if ref == "Name" and not optOf(self, "Name") then show = false end
         if ref == "Distance" and not optOf(self, "Distance") then show = false end
-        if show then
-            visible[#visible + 1] = entry
-        else
-            entry.Drawing.Visible = false
+        if entry.Drawing then
+            if show then
+                visible[#visible + 1] = entry
+            else
+                entry.Drawing.Visible = false
+            end
         end
     end
 
@@ -375,7 +396,8 @@ function ESP:_PositionTexts(anchorX, boxMinY, boxMaxY)
     for i, entry in ipairs(visible) do
         local d = entry.Drawing
         d.Center = true
-        d.Font = optOf(self, "Font")
+        local font = optOf(self, "Font")
+        if font ~= nil then pcall(function() d.Font = font end) end
         d.Size = size
         d.Outline = optOf(self, "TextOutline")
         if entry.Callback then d.Text = entry.Callback() end
@@ -443,27 +465,27 @@ function ESP:_Update()
     local showBox = optOf(self, "Box") and boundsOn
     local boxType = optOf(self, "BoxType")
     if showBox and boxType == "corner" then
-        self.Box.Visible = false
+        if self.Box then self.Box.Visible = false end
         self:_DrawCorners(minX, minY, maxX, maxY, colorOf(self, "CornerColor"), thickness)
-    elseif showBox then
-        for _, l in ipairs(self.Corners) do l.Visible = false end
+    elseif showBox and self.Box then
+        for _, l in ipairs(self.Corners or {}) do l.Visible = false end
         self.Box.Position = Vector2.new(minX, minY)
         self.Box.Size = Vector2.new(maxX - minX, maxY - minY)
         self.Box.Color = colorOf(self, "BoxColor")
         self.Box.Thickness = thickness
         self.Box.Visible = true
     else
-        self.Box.Visible = false
-        for _, l in ipairs(self.Corners) do l.Visible = false end
+        if self.Box then self.Box.Visible = false end
+        for _, l in ipairs(self.Corners or {}) do l.Visible = false end
     end
 
-    if optOf(self, "Tracer") and centerOn then
+    if self.Tracer and optOf(self, "Tracer") and centerOn then
         self.Tracer.From = tracerOrigin(optOf(self, "TracerOrigin"))
         self.Tracer.To = Vector2.new(anchorX, boxMaxY)
         self.Tracer.Color = colorOf(self, "TracerColor")
         self.Tracer.Thickness = thickness
         self.Tracer.Visible = true
-    else
+    elseif self.Tracer then
         self.Tracer.Visible = false
     end
 
@@ -535,10 +557,7 @@ end
 
 ESP._Connection = RunService.RenderStepped:Connect(function()
     for _, tracker in pairs(ESP.Trackers) do
-        local ok = pcall(function() tracker:_Update() end)
-        if not ok and tracker.Destroy then
-            pcall(function() tracker:Destroy() end)
-        end
+        pcall(function() tracker:_Update() end)
     end
 end)
 
