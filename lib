@@ -40,7 +40,7 @@ ESP.Settings = {
     DistanceColor = Color3.fromRGB(200, 200, 200),
 }
 
-ESP.Version = "1.0.5"
+ESP.Version = "1.0.6"
 ESP.Debug = true
 
 function ESP.Notify(title, text)
@@ -287,9 +287,9 @@ function ESP:_IsAlive()
 end
 
 function ESP:_Position()
-    if self.Object and self.Object.Parent then
-        return self.Object.Position
-    end
+    if not self.Object then return nil end
+    local ok, pos = pcall(function() return self.Object.Position end)
+    if ok and pos then return pos end
     return nil
 end
 
