@@ -72,6 +72,10 @@ local function newDrawing(kind)
     return nil
 end
 
+local function _setSize(d, v) d.Size = v end
+local function _setFontSize(d, v) d.FontSize = v end
+local function _setFont(d, v) d.Font = v end
+
 local function optOf(self, key)
     local v = self.Options[key]
     if v ~= nil then return v end
@@ -293,8 +297,13 @@ function ESP:_Update()
         baseY = screen.Y - spacing - (n * lineH)
     end
 
+    local font = optOf(self, "Font")
     for i, entry in ipairs(visible) do
         local d = entry.Drawing
+        d.Center = true
+        if font ~= nil then pcall(_setFont, d, font) end
+        pcall(_setFontSize, d, size)
+        pcall(_setSize, d, size)
         if entry.Callback then d.Text = entry.Callback() end
         d.Position = Vector2.new(screen.X, baseY + (i - 1) * lineH)
         d.Visible = true
