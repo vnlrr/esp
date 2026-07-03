@@ -40,6 +40,22 @@ ESP.Settings = {
     DistanceColor = Color3.fromRGB(200, 200, 200),
 }
 
+ESP.Version = "1.0.5"
+ESP.Debug = true
+
+function ESP.Notify(title, text)
+    if notify then
+        pcall(notify, tostring(text), tostring(title), 6)
+    end
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = title or "ESP",
+            Text = text or "",
+            Duration = 6,
+        })
+    end)
+end
+
 local function resolvePart(object)
     local ok, isBase = pcall(function() return object:IsA("BasePart") end)
     if not ok then return nil end
@@ -91,6 +107,44 @@ local function runUpdate(tracker)
     tracker:_Update()
 end
 
+local _dbg
+local function updateDebug()
+    if not ESP.Debug then
+        if _dbg then _dbg.Visible = false end
+        return
+    end
+    if not _dbg then
+        _dbg = newDrawing("Text")
+        if not _dbg then return end
+        _dbg.Center = false
+        _dbg.Outline = true
+        _dbg.Color = Color3.fromRGB(0, 255, 0)
+    end
+    pcall(_setFontSize, _dbg, 16)
+    pcall(_setSize, _dbg, 16)
+    _dbg.Position = Vector2.new(14, 14)
+
+    local n = 0
+    for _ in pairs(ESP.Trackers) do n = n + 1 end
+    local lines = "ESP v" .. tostring(ESP.Version) .. "  running=" .. tostring(ESP._Running) .. "  trackers=" .. n
+
+    for _, t in pairs(ESP.Trackers) do
+        local alive = t:_IsAlive()
+        local pos = t:_Position()
+        if pos then
+            local s, on = WorldToScreen(pos)
+            lines = lines .. "\n" .. tostring(t.Name) .. "  alive=" .. tostring(alive) .. "  on=" .. tostring(on)
+            if s then lines = lines .. "  (" .. math.floor(s.X) .. "," .. math.floor(s.Y) .. ")" end
+        else
+            lines = lines .. "\n" .. tostring(t.Name) .. "  alive=" .. tostring(alive) .. "  pos=nil"
+        end
+        break
+    end
+
+    _dbg.Text = lines
+    _dbg.Visible = true
+end
+
 local function ensureLoop()
     if ESP._Running then return end
     ESP._Running = true
@@ -99,6 +153,7 @@ local function ensureLoop()
             for _, tracker in pairs(ESP.Trackers) do
                 pcall(runUpdate, tracker)
             end
+            pcall(updateDebug)
             task.wait()
         end
     end)
@@ -379,4 +434,5 @@ if _G.ESP and _G.ESP._Running then
 end
 
 _G.ESP = ESP
+ESP.Notify("ESP Loaded", "ESP v" .. ESP.Version .. " ready")
 return ESP
