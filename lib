@@ -18,6 +18,7 @@ local ESP = {}
 ESP.__index = ESP
 
 ESP.Trackers = {}
+ESP._Running = false
 
 ESP.Settings = {
     Enabled = true,
@@ -86,8 +87,27 @@ end
 -- Tracker
 --============================================================
 
+local function runUpdate(tracker)
+    tracker:_Update()
+end
+
+local function ensureLoop()
+    if ESP._Running then return end
+    ESP._Running = true
+    task.spawn(function()
+        while ESP._Running do
+            for _, tracker in pairs(ESP.Trackers) do
+                pcall(runUpdate, tracker)
+            end
+            task.wait()
+        end
+    end)
+end
+
 function ESP.NewTracker(object, options)
     options = options or {}
+
+    ensureLoop()
 
     local part = resolvePart(object)
     if not part then
@@ -354,19 +374,9 @@ function ESP.Unload()
     _G.ESP = nil
 end
 
-if _G.ESP and _G.ESP._Running ~= nil then
+if _G.ESP and _G.ESP._Running then
     _G.ESP._Running = false
 end
-
-ESP._Running = true
-task.spawn(function()
-    while ESP._Running do
-        for _, tracker in pairs(ESP.Trackers) do
-            pcall(function() tracker:_Update() end)
-        end
-        task.wait()
-    end
-end)
 
 _G.ESP = ESP
 return ESP
