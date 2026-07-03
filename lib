@@ -39,53 +39,31 @@ ESP.Settings = {
     DistanceColor = Color3.fromRGB(200, 200, 200),
 }
 
-local BasePartTypes = {
-    Part = "BasePart",
-    MeshPart = "BasePart",
-    UnionOperation = "BasePart",
-    CornerWedgePart = "BasePart",
-    WedgePart = "BasePart",
-    TrussPart = "BasePart",
-    Seat = "BasePart",
-    VehicleSeat = "BasePart",
-    SpawnLocation = "BasePart",
-    Model = "Model",
-    Actor = "Model",
-}
+local function resolvePart(object)
+    local ok, isBase = pcall(function() return object:IsA("BasePart") end)
+    if not ok then return nil end
+    if isBase then return object end
 
-local function classifyObject(object)
-    if typeof(object) ~= "Instance" then return nil end
-    return BasePartTypes[object.ClassName]
-end
+    local okModel, isModel = pcall(function() return object:IsA("Model") end)
+    if okModel and isModel and object.PrimaryPart then
+        return object.PrimaryPart
+    end
 
-local function resolveModelPart(model)
-    local common = { "HumanoidRootPart", "Root", "RootPart", "Torso", "UpperTorso", "Core", "Head" }
-    local children = model:GetChildren()
-
+    local common = { "HumanoidRootPart", "Root", "RootPart", "Torso", "UpperTorso", "Head" }
     for _, name in ipairs(common) do
-        for _, child in ipairs(children) do
-            if string.lower(child.Name) == string.lower(name) and BasePartTypes[child.ClassName] == "BasePart" then
-                return child
-            end
+        local child = object:FindFirstChild(name)
+        if child then
+            local okB, b = pcall(function() return child:IsA("BasePart") end)
+            if okB and b then return child end
         end
     end
 
-    if model.ClassName == "Model" and model.PrimaryPart then
-        return model.PrimaryPart
+    local p = object:FindFirstChildWhichIsA("BasePart")
+    if p then return p end
+    for _, d in ipairs(object:GetDescendants()) do
+        if d:IsA("BasePart") then return d end
     end
-
-    local largest, maxVol = nil, 0
-    for _, child in ipairs(model:GetDescendants()) do
-        if BasePartTypes[child.ClassName] == "BasePart" then
-            local s = child.Size
-            local vol = s.X * s.Y * s.Z
-            if vol > maxVol then
-                maxVol = vol
-                largest = child
-            end
-        end
-    end
-    return largest
+    return nil
 end
 
 local function newDrawing(kind)
@@ -107,20 +85,10 @@ end
 function ESP.NewTracker(object, options)
     options = options or {}
 
-    local objectType = classifyObject(object)
-    if not objectType then
-        warn("[ESP] NewTracker expects a BasePart or Model, got: " .. tostring(object))
+    local part = resolvePart(object)
+    if not part then
+        warn("[ESP] NewTracker could not find a part for: " .. tostring(object))
         return nil
-    end
-
-    local rawObject = object
-    local part = object
-    if objectType == "Model" then
-        part = resolveModelPart(object)
-        if not part then
-            warn("[ESP] Model has no valid parts: " .. tostring(object.Name))
-            return nil
-        end
     end
 
     local key = part.Address
@@ -129,9 +97,8 @@ function ESP.NewTracker(object, options)
     end
 
     local self = setmetatable({}, ESP)
-    self.RawObject = rawObject
+    self.RawObject = object
     self.Object = part
-    self.ObjectType = objectType
     self.Options = options
     self.Type = options.Type
     self.Name = options.Name or rawObject.Name
@@ -204,8 +171,27 @@ function ESP:RemoveText(reference)
     end
 end
 
+function ESP:_ApplyStyle()
+    local font = optOf(self, "Font")
+    local sz = optOf(self, "TextSize")
+    local outline = optOf(self, "TextOutline")
+    for _, ref in ipairs(self.TextOrder or {}) do
+        local d = self.Texts[ref] and self.Texts[ref].Drawing
+        if d then
+            d.Center = true
+            d.Outline = outline
+            if font ~= nil then pcall(function() d.Font = font end) end
+            pcall(function() d.Size = sz end)
+            pcall(function() d.FontSize = sz end)
+        end
+    end
+end
+
 function ESP:Set(key, value)
     self.Options[key] = value
+    if key == "Font" or key == "TextSize" or key == "TextOutline" then
+        self:_ApplyStyle()
+    end
 end
 
 function ESP:SetColor(color)
@@ -222,10 +208,6 @@ function ESP:_IsAlive()
 end
 
 function ESP:_Position()
-    if self.ObjectType == "Model" then
-        local ok, cf = pcall(function() return self.RawObject:GetBoundingBox() end)
-        if ok and cf then return cf.Position end
-    end
     if self.Object and self.Object.Parent then
         return self.Object.Position
     end
@@ -313,11 +295,6 @@ function ESP:_Update()
 
     for i, entry in ipairs(visible) do
         local d = entry.Drawing
-        d.Center = true
-        local font = optOf(self, "Font")
-        if font ~= nil then pcall(function() d.Font = font end) end
-        pcall(function() d.Size = size end)
-        pcall(function() d.FontSize = size end)
         if entry.Callback then d.Text = entry.Callback() end
         d.Position = Vector2.new(screen.X, baseY + (i - 1) * lineH)
         d.Visible = true
@@ -343,11 +320,7 @@ end
 --============================================================
 
 function ESP.Get(object)
-    if typeof(object) ~= "Instance" then return nil end
-    local part = object
-    if classifyObject(object) == "Model" then
-        part = resolveModelPart(object)
-    end
+    local part = resolvePart(object)
     return part and ESP.Trackers[part.Address] or nil
 end
 
